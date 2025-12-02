@@ -1,3 +1,4 @@
+ # main.py 
  # main.py
 import os
 import logging
@@ -193,7 +194,7 @@ class BotHandlers:
 # -------------------------
 def main():
     # اقرأ التوكن من متغير البيئة — أو عدّله هنا مباشرة (لا تترك التوكن مكشوفاً في السجلات)
-    TOKEN = "8303140713:AAESFnL2CjH3aAu2tT6nlbbuOJdzgXg6ong"
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TOKEN:
         raise SystemExit("❌ ضع TELEGRAM_BOT_TOKEN في متغير البيئة قبل التشغيل.")
 
