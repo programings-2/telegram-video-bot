@@ -1,5 +1,4 @@
- # main.py 
- # main.py
+# main.py
 import os
 import logging
 import asyncio
@@ -19,17 +18,19 @@ from session import SessionManager
 from keyboards import build_formats_keyboard
 from captions import video_caption, audio_caption
 
+# -------------------------
 # Logger
+# -------------------------
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ensure downloads folder
+# -------------------------
+# إعداد المجلدات والكائنات
+# -------------------------
 ensure_downloads_dir("downloads")
-
-# instances
 sessions = SessionManager(ttl_seconds=600)
 downloader = MediaDownloader()
 
@@ -38,7 +39,6 @@ downloader = MediaDownloader()
 # Handlers
 # -------------------------
 class BotHandlers:
-
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "👋 أهلاً! أرسل رابط فيديو/صوت من أي موقع وسأجهّز لك الخيارات.\n"
@@ -51,7 +51,7 @@ class BotHandlers:
             "• أرسل رابط الفيديو أو الصوت\n"
             "• اختر الجودة من الأزرار\n"
             "• أو اختر استخراج صوت MP3\n\n"
-            "ملاحظة: إذا كان الملف كبيرًا جداً، قد لا يرسله التليجرام (حدود 2GB للمستخدمين العاديين)."
+            "ملاحظة: إذا كان الملف كبيرًا جداً، قد لا يرسله التليجرام (حدود 2GB)."
         )
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -68,7 +68,6 @@ class BotHandlers:
             await msg.edit_text("❌ لم أستطع استخراج الصيغ من الرابط. ربما الموقع محمي أو الرابط غير صحيح.")
             return
 
-        # خزن الجلسة (نخزن map من short_id -> format_id)
         formats_map = {f['short_id']: f['format_id'] for f in formats}
         sessions.create(update.effective_chat.id, {
             "url": url,
@@ -78,15 +77,13 @@ class BotHandlers:
         })
 
         kb = build_formats_keyboard([{"short_id": f['short_id'], "label": f['label']} for f in formats])
-
         title = info.get("title", "بدون عنوان")
         await msg.edit_text(f"🎬 *{title}*\n\nاختر الجودة من الأزرار أدناه:", parse_mode="Markdown", reply_markup=kb)
 
     async def callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
         await query.answer()
-
-        data = query.data  # مثال: "fmt:1" أو "action:audio"
+        data = query.data
         chat_id = query.message.chat.id
         session = sessions.get(chat_id)
 
@@ -102,14 +99,12 @@ class BotHandlers:
                 return
 
             await query.edit_message_text("⏳ جاري التحميل — أعمل على تنزيل الملف الآن...")
-
             url = session.get("url")
             filepath, info = await downloader.download_by_format(url, format_id)
             if not filepath:
                 await query.edit_message_text("❌ فشل التحميل. جرب جودة أخرى.")
                 return
 
-            # إرسال الملف (بأمان مع فتح الملف داخل with)
             try:
                 ext = os.path.splitext(filepath)[1].lower()
                 if ext in [".mp3", ".m4a", ".wav"]:
@@ -121,18 +116,15 @@ class BotHandlers:
                     with open(filepath, "rb") as f:
                         await context.bot.send_video(chat_id, f, caption=cap)
             finally:
-                # حذف الملف مؤقتًا
                 try:
                     os.remove(filepath)
                 except Exception:
                     pass
 
             await query.edit_message_text("✅ تم الإرسال. شكراً لاستخدام البوت!")
-            # نمسح الجلسة بعد الإرسال
             sessions.clear(chat_id)
             return
 
-        # إجراءات عامة
         if data == "action:audio":
             if not session:
                 await query.edit_message_text("❌ انتهاء الجلسة. أعد إرسال الرابط.")
@@ -146,7 +138,7 @@ class BotHandlers:
             try:
                 cap = audio_caption(info)
                 with open(filepath, "rb") as f:
-                    await context.bot.send_audio(query.message.chat.id, f, caption=cap)
+                    await context.bot.send_audio(chat_id, f, caption=cap)
             finally:
                 try:
                     os.remove(filepath)
@@ -176,7 +168,6 @@ class BotHandlers:
             return
 
         if data == "action:retry":
-            # نعيد الطلب: نطلب من المستخدم إعادة إرسال الرابط
             sessions.clear(chat_id)
             await query.edit_message_text("🔁 تم إلغاء الجلسة. الرجاء إعادة إرسال الرابط.")
             return
@@ -186,28 +177,36 @@ class BotHandlers:
             await query.edit_message_text("❌ تم الإلغاء.")
             return
 
-        # أي callback غير معروف
         await query.edit_message_text("⚠️ أمر غير معروف.")
 
+
 # -------------------------
-# Main
+# Main (Webhook)
 # -------------------------
 def main():
-    # اقرأ التوكن من متغير البيئة — أو عدّله هنا مباشرة (لا تترك التوكن مكشوفاً في السجلات)
     TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TOKEN:
         raise SystemExit("❌ ضع TELEGRAM_BOT_TOKEN في متغير البيئة قبل التشغيل.")
 
+    PORT = int(os.environ.get("PORT", 8443))
+    WEBHOOK_URL = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/webhook"
+
     app = Application.builder().token(TOKEN).build()
     handlers = BotHandlers()
 
+    # إضافة handlers
     app.add_handler(CommandHandler("start", handlers.start))
     app.add_handler(CommandHandler("help", handlers.help))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_message))
     app.add_handler(CallbackQueryHandler(handlers.callback_query))
 
-    print("🚀 Universal Bot is running...")
-    app.run_polling(allowed_updates=None)
+    print(f"🚀 Bot running as Webhook on {WEBHOOK_URL}")
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url=WEBHOOK_URL
+    )
+
 
 if __name__ == "__main__":
     main()
