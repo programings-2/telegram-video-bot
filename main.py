@@ -1,16 +1,8 @@
-# main.py
-import os
+ import os
 import logging
-import asyncio
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
-)
+from fastapi import FastAPI, Request
+from telegram import Update
+from telegram.ext import Application, Dispatcher, CallbackQueryHandler, CommandHandler, MessageHandler, filters
 
 from utils import extract_url, ensure_downloads_dir
 from downloader import MediaDownloader
@@ -18,34 +10,39 @@ from session import SessionManager
 from keyboards import build_formats_keyboard
 from captions import video_caption, audio_caption
 
-# -------------------------
-# Logger
-# -------------------------
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# -------------------------
-# إعداد المجلدات والكائنات
-# -------------------------
 ensure_downloads_dir("downloads")
+
 sessions = SessionManager(ttl_seconds=600)
 downloader = MediaDownloader()
 
+app = FastAPI()
+
+# اقرأ التوكن من متغير البيئة
+TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+if not TOKEN:
+    raise SystemExit("❌ ضع TELEGRAM_BOT_TOKEN في متغير البيئة قبل التشغيل.")
+
+application = Application.builder().token(TOKEN).build()
+dispatcher = application.dispatcher
 
 # -------------------------
 # Handlers
 # -------------------------
 class BotHandlers:
-    async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    async def start(self, update, context):
         await update.message.reply_text(
             "👋 أهلاً! أرسل رابط فيديو/صوت من أي موقع وسأجهّز لك الخيارات.\n"
             "🔰 يدعم المواقع التي تدعمها مكتبة yt-dlp."
         )
 
-    async def help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def help(self, update, context):
         await update.message.reply_text(
             "استخدم:\n"
             "• أرسل رابط الفيديو أو الصوت\n"
@@ -54,7 +51,7 @@ class BotHandlers:
             "ملاحظة: إذا كان الملف كبيرًا جداً، قد لا يرسله التليجرام (حدود 2GB)."
         )
 
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def handle_message(self, update, context):
         text = update.message.text or ""
         url = extract_url(text)
         if not url:
@@ -80,7 +77,7 @@ class BotHandlers:
         title = info.get("title", "بدون عنوان")
         await msg.edit_text(f"🎬 *{title}*\n\nاختر الجودة من الأزرار أدناه:", parse_mode="Markdown", reply_markup=kb)
 
-    async def callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def callback_query(self, update, context):
         query = update.callback_query
         await query.answer()
         data = query.data
@@ -116,97 +113,33 @@ class BotHandlers:
                     with open(filepath, "rb") as f:
                         await context.bot.send_video(chat_id, f, caption=cap)
             finally:
-                try:
-                    os.remove(filepath)
-                except Exception:
-                    pass
+                try: os.remove(filepath)
+                except: pass
 
             await query.edit_message_text("✅ تم الإرسال. شكراً لاستخدام البوت!")
             sessions.clear(chat_id)
             return
 
-        if data == "action:audio":
-            if not session:
-                await query.edit_message_text("❌ انتهاء الجلسة. أعد إرسال الرابط.")
-                return
-            await query.edit_message_text("⏳ جاري استخراج الصوت (MP3)...")
-            url = session.get("url")
-            filepath, info = await downloader.download_extract_audio(url)
-            if not filepath:
-                await query.edit_message_text("❌ فشل استخراج الصوت.")
-                return
-            try:
-                cap = audio_caption(info)
-                with open(filepath, "rb") as f:
-                    await context.bot.send_audio(chat_id, f, caption=cap)
-            finally:
-                try:
-                    os.remove(filepath)
-                except Exception:
-                    pass
-            await query.edit_message_text("✅ تم استخراج وإرسال الصوت!")
-            sessions.clear(chat_id)
-            return
-
-        if data == "action:info":
-            if not session:
-                await query.edit_message_text("❌ انتهاء الجلسة.")
-                return
-            info = session.get("info", {})
-            title = info.get("title", "بدون عنوان")
-            duration = info.get("duration", 0)
-            minutes = duration // 60
-            seconds = duration % 60
-            text = (
-                f"ℹ️ *معلومات الفيديو*\n"
-                f"• العنوان: {title}\n"
-                f"• المدة: {minutes}:{seconds:02d}\n"
-                f"• uploader: {info.get('uploader','غير معروف')}\n"
-                f"• views: {info.get('view_count',0)}"
-            )
-            await query.edit_message_text(text, parse_mode="Markdown")
-            return
-
-        if data == "action:retry":
-            sessions.clear(chat_id)
-            await query.edit_message_text("🔁 تم إلغاء الجلسة. الرجاء إعادة إرسال الرابط.")
-            return
-
-        if data == "action:cancel":
-            sessions.clear(chat_id)
-            await query.edit_message_text("❌ تم الإلغاء.")
-            return
-
-        await query.edit_message_text("⚠️ أمر غير معروف.")
-
+# -------------------------
+# إضافة Handlers
+# -------------------------
+handlers = BotHandlers()
+dispatcher.add_handler(CommandHandler("start", handlers.start))
+dispatcher.add_handler(CommandHandler("help", handlers.help))
+dispatcher.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_message))
+dispatcher.add_handler(CallbackQueryHandler(handlers.callback_query))
 
 # -------------------------
-# Main (Webhook)
+# Webhook endpoint لـ Render
 # -------------------------
-def main():
-    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not TOKEN:
-        raise SystemExit("❌ ضع TELEGRAM_BOT_TOKEN في متغير البيئة قبل التشغيل.")
+@app.post("/webhook")
+async def webhook(req: Request):
+    data = await req.json()
+    update = Update.de_json(data, application.bot)
+    await dispatcher.process_update(update)
+    return {"ok": True}
 
-    PORT = int(os.environ.get("PORT", 8443))
-    WEBHOOK_URL = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME')}/webhook"
-
-    app = Application.builder().token(TOKEN).build()
-    handlers = BotHandlers()
-
-    # إضافة handlers
-    app.add_handler(CommandHandler("start", handlers.start))
-    app.add_handler(CommandHandler("help", handlers.help))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_message))
-    app.add_handler(CallbackQueryHandler(handlers.callback_query))
-
-    print(f"🚀 Bot running as Webhook on {WEBHOOK_URL}")
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        webhook_url=WEBHOOK_URL
-    )
-
-
-if __name__ == "__main__":
-    main()
+# Endpoint للتاكد ان السيرفر شغال
+@app.get("/")
+async def root():
+    return {"status": "Bot is running"}
